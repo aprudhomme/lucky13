@@ -1,0 +1,1 @@
+openssl s_server -key server.key -cert server.crt

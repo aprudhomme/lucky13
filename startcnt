@@ -1,0 +1,1 @@
+openssl s_client -key client.key -cert client.crt -cipher AES128-SHA
