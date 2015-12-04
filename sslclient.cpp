@@ -59,12 +59,18 @@ int main(int argc, char * const argv[])
     private_key_path = "client.key";
     remote_name = "localhost:4433";
     to_send_byte_str = "j";
-    
+   
+    if(argc > 1)
+    {
+        remote_name = argv[1];
+    }
+ 
     //if (!isprint(to_send_byte) || to_send_byte_str[1] != '\0')
     //    usage_error_exit();
 
     // create ssl context
-    if(!(ssl_ctx = SSL_CTX_new(SSLv23_method())))
+    //if(!(ssl_ctx = SSL_CTX_new(SSLv23_method())))
+    if(!(ssl_ctx = SSL_CTX_new(TLSv1_method())))
     {
         ssl_error_exit(NULL);
     }

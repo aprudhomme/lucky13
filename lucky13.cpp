@@ -1,7 +1,10 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <ctime>
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
 #include <netinet/ip.h>
@@ -213,8 +216,58 @@ bool sortFunc(std::pair<unsigned short,uint64_t> & first, std::pair<unsigned sho
 	return first.second < second.second;
 }
 
+void DumpPerMaskStat(std::string type, time_t timestamp, std::list<std::pair<unsigned short,uint64_t> > & list)
+{
+	std::stringstream ss;
+	ss << "data/" << type << "-" << timestamp << ".csv";
+	std::ofstream outfile;
+	outfile.open(ss.str().c_str());
+
+	if(outfile.fail())
+	{
+		std::cerr << "Error opening file: " << ss.str() << std::endl;
+		return;
+	}
+
+	outfile << "Mask," << type << std::endl;
+	for(std::list<std::pair<unsigned short,uint64_t> >::iterator it = list.begin(); it != list.end(); ++it)
+	{
+		unsigned short mask = (it->first & 0x00FF);
+		outfile << mask << "," << it->second << std::endl;
+	}
+	outfile.close();
+}
+
+void DumpDistributions(std::string label, time_t timestamp, unsigned short mask1, std::list<uint64_t> & data1, unsigned short mask2, std::list<uint64_t> & data2)
+{
+	std::stringstream ss;
+	ss << "data/" << label << "-" << timestamp << ".csv";
+	std::ofstream outfile;
+	outfile.open(ss.str().c_str());
+
+	if(outfile.fail())
+	{
+		std::cerr << "Error opening file: " << ss.str() << std::endl;
+		return;
+	}
+
+	outfile << "Mask 1,Mask 2" << std::endl;
+	std::list<uint64_t>::iterator it1 = data1.begin();
+	std::list<uint64_t>::iterator it2 = data2.begin();
+	for(;it1 != data1.end();)
+	{
+		outfile << (*it1) << "," << (*it2) << std::endl;
+
+		it1++;
+		it2++;
+	}
+	outfile.close();
+}
+
 void ProcessStats()
 {
+	time_t currentTime;
+	currentTime = time(NULL);
 	if(false)
 	{
 		// Print stats
@@ -266,8 +319,26 @@ void ProcessStats()
 			avgList.push_back(std::pair<unsigned short,uint64_t>(it->first,total/((uint64_t)samples)));
                 }
 
+		DumpPerMaskStat("Average",currentTime,avgList);
+		DumpPerMaskStat("Median",currentTime,medianList);
+
 		avgList.sort(sortFunc);
 		medianList.sort(sortFunc);
+		
+		std::list<std::pair<unsigned short,uint64_t> >::iterator pit = medianList.begin();
+		unsigned short mask1, mask2;
+		mask1 = pit->first;
+		pit++;
+		mask2 = pit->first;
+
+		DumpDistributions("MedianTop",currentTime,mask1,maskCycles[mask1],mask2,maskCycles[mask2]);
+
+		pit = avgList.begin();
+		mask1 = pit->first;
+		pit++;
+		mask2 = pit->first;
+
+		DumpDistributions("AvgTop",currentTime,mask1,maskCycles[mask1],mask2,maskCycles[mask2]);
 
 		unsigned short padTarget = blockSize - blockOffset - 1;
 		unsigned short padTarget2 = padTarget + 1;
@@ -303,7 +374,7 @@ void ProcessStats()
 void ProcessCycles()
 {
 	uint64_t diff = recvCycle - sendCycle;
-	//std::cerr << "Cycle count: " << diff << std::endl;	
+	std::cerr << "Cycle count: " << diff << std::endl;	
 
 	unsigned short mask = 0;
 	if(firstPhase)
@@ -325,7 +396,7 @@ void ProcessCycles()
 
 		if(xorMask[blockOffset] == 0)
 		{
-			std::cerr << std::endl;
+			//std::cerr << std::endl;
 			ProcessStats();
 		}
 	}
@@ -333,6 +404,12 @@ void ProcessCycles()
 
 int main(int argc, char ** argv)
 {
+	char * interfaceStr = "lo";
+	if(argc > 1)
+	{
+		interfaceStr = argv[1];
+	}
+
 	xorMask = new unsigned char[blockSize];
 	plaintext = new unsigned char[blockSize];
 
@@ -370,7 +447,7 @@ int main(int argc, char ** argv)
 
 	ifreq Interface; 
 	memset(&Interface, 0, sizeof(Interface)); 
-	strncpy(Interface.ifr_ifrn.ifrn_name, "lo", IFNAMSIZ); 
+	strncpy(Interface.ifr_ifrn.ifrn_name, interfaceStr, IFNAMSIZ); 
 	if (setsockopt(sock_raw, SOL_SOCKET, SO_BINDTODEVICE, &Interface, sizeof(Interface)) < 0) 
 	{ 
 		std::cerr << "Error binding interface" << std::endl;
