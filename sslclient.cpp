@@ -1,10 +1,3 @@
-// xchg2.c
-// Andrew Prudhomme
-// A05419855
-// cse 127 Fall 14
-// Assignment 4
-//
-
 #include <stdarg.h>
 #include <stdio.h>
 #include <errno.h>
