@@ -55,7 +55,7 @@ unsigned char * plaintext;
 
 const int blockSize = 16;
 int blockOffset = blockSize - 2;
-int samples = 4;
+int samples = 128;
 
 int sock_raw;
 struct sockaddr_in sin;
@@ -407,8 +407,6 @@ void ProcessCycles()
 
 	std::cerr << "Cycle count: " << diff << std::endl;
 
-	return;
-
 	unsigned short mask = 0;
 	if(firstPhase)
 	{
@@ -450,8 +448,8 @@ int main(int argc, char ** argv)
 	memset(xorMask, 0xFF, blockSize);
 	memset(plaintext, 0x00, blockSize);
 
-	//xorMask[blockSize-1] = 0x00;
-	//xorMask[blockSize-2] = 0x00;
+	xorMask[blockSize-1] = 0x00;
+	xorMask[blockSize-2] = 0x00;
 
 	ResetState();
 
