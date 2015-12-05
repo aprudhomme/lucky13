@@ -7,6 +7,8 @@
 #include <openssl/err.h>
 #include <openssl/bio.h>
 
+#include <sched.h>
+
 #include "common.h"
 // hacky
 #include "common.c"
@@ -15,6 +17,11 @@ const char * USAGE = "xchg2 CA_CERT LOCAL_CERT PRIVATE_KEY HOST:PORT CHAR";
 
 int main(int argc, char * const argv[])
 {
+    cpu_set_t  mask;
+    CPU_ZERO(&mask);
+    CPU_SET(6, &mask);
+    sched_setaffinity(0, sizeof(mask), &mask);
+
     // Command-line arguments.
     
     char * ca_cert_path;
@@ -63,7 +70,7 @@ int main(int argc, char * const argv[])
 
     // create ssl context
     //if(!(ssl_ctx = SSL_CTX_new(SSLv23_method())))
-    if(!(ssl_ctx = SSL_CTX_new(TLSv1_method())))
+    if(!(ssl_ctx = SSL_CTX_new(TLSv1_2_method())))
     {
         ssl_error_exit(NULL);
     }
